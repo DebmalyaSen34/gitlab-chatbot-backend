@@ -114,67 +114,56 @@ class TestIncrementalSyncManager:
     """Test the IncrementalSyncManager class."""
 
     @patch("ingest.create_client")
-    @patch("ingest.GenAIClient")
-    def test_init(self, mock_genai, mock_supabase):
+    def test_init(self, mock_supabase):
         manager = IncrementalSyncManager(
             supabase_url="https://test.supabase.co",
             supabase_key="test-key",
-            gemini_api_key="gemini-key",
         )
         assert manager.sync_run_id is not None
         mock_supabase.assert_called_once()
 
     @patch("ingest.create_client")
-    @patch("ingest.GenAIClient")
-    def test_sync_run_id_is_timestamp(self, mock_genai, mock_supabase):
+    def test_sync_run_id_is_timestamp(self, mock_supabase):
         manager = IncrementalSyncManager(
             supabase_url="https://test.supabase.co",
             supabase_key="test-key",
-            gemini_api_key="gemini-key",
         )
         # Should be a numeric timestamp string
         assert manager.sync_run_id.isdigit()
 
+    @patch("ingest.requests.post")
     @patch("ingest.create_client")
-    @patch("ingest.GenAIClient")
-    def test_get_embedding_calls_genai(self, mock_genai_class, mock_supabase):
-        mock_client = MagicMock()
-        mock_genai_class.return_value = mock_client
-        mock_result = MagicMock()
-        mock_result.embeddings = [MagicMock(values=[0.1] * 768)]
-        mock_client.models.embed_content.return_value = mock_result
+    def test_get_embedding_calls_ollama(self, mock_supabase, mock_requests_post):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"embeddings": [[0.1] * 768]}
+        mock_resp.raise_for_status = MagicMock()
+        mock_requests_post.return_value = mock_resp
 
         manager = IncrementalSyncManager(
             supabase_url="https://test.supabase.co",
             supabase_key="test-key",
-            gemini_api_key="gemini-key",
         )
         embedding = manager.get_embedding("test text")
-        mock_client.models.embed_content.assert_called_once()
+        mock_requests_post.assert_called_once()
         assert len(embedding) == 768
 
     @patch("ingest.create_client")
-    @patch("ingest.GenAIClient")
-    def test_sync_file_skips_short_content(self, mock_genai, mock_supabase):
+    def test_sync_file_skips_short_content(self, mock_supabase):
         mock_client = MagicMock()
         mock_supabase.return_value = mock_client
 
         manager = IncrementalSyncManager(
             supabase_url="https://test.supabase.co",
             supabase_key="test-key",
-            gemini_api_key="gemini-key",
         )
         # Very short content should be skipped
         result = manager.sync_file("test.md", "short")
         assert result == "SKIPPED"
 
     @patch("ingest.create_client")
-    @patch("ingest.GenAIClient")
-    def test_sync_file_skips_unchanged_hash(self, mock_genai_class, mock_supabase_class):
+    def test_sync_file_skips_unchanged_hash(self, mock_supabase_class):
         mock_supabase = MagicMock()
         mock_supabase_class.return_value = mock_supabase
-        mock_genai = MagicMock()
-        mock_genai_class.return_value = mock_genai
 
         # Mock that the file already exists with same hash
         content = "This is a long enough content for testing purposes. " * 5
@@ -186,7 +175,6 @@ class TestIncrementalSyncManager:
         manager = IncrementalSyncManager(
             supabase_url="https://test.supabase.co",
             supabase_key="test-key",
-            gemini_api_key="gemini-key",
         )
         result = manager.sync_file("test.md", content)
         assert result == "SKIPPED"

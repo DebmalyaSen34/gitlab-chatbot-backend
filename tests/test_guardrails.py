@@ -115,48 +115,54 @@ class TestOnTopic:
     def test_empty_string(self):
         assert is_on_topic("") is False
 
-    @patch("guardrails.Client")
+    @patch("guardrails.OpenAI")
     def test_off_topic_with_api_key(self, mock_client_class):
         """Test that API key-based check correctly rejects off-topic queries."""
         mock_client = MagicMock()
         mock_client_class.return_value = mock_client
+        mock_choice = MagicMock()
+        mock_choice.message.content = "NO"
         mock_response = MagicMock()
-        mock_response.text = "NO"
-        mock_client.models.generate_content.return_value = mock_response
+        mock_response.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_response
 
         result = is_on_topic("How do I bake chocolate chip cookies?", api_key="test-key")
         assert result is False
 
-    @patch("guardrails.Client")
+    @patch("guardrails.OpenAI")
     def test_api_check_yes(self, mock_client_class):
-        """Test when Gemini API returns YES."""
+        """Test when LLM API returns YES."""
         mock_client = MagicMock()
         mock_client_class.return_value = mock_client
+        mock_choice = MagicMock()
+        mock_choice.message.content = "YES"
         mock_response = MagicMock()
-        mock_response.text = "YES"
-        mock_client.models.generate_content.return_value = mock_response
+        mock_response.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_response
 
         result = is_on_topic("random off-topic question", api_key="test-key")
         assert result is True
 
-    @patch("guardrails.Client")
+    @patch("guardrails.OpenAI")
     def test_api_check_no(self, mock_client_class):
-        """Test when Gemini API returns NO."""
+        """Test when LLM API returns NO."""
         mock_client = MagicMock()
         mock_client_class.return_value = mock_client
+        mock_choice = MagicMock()
+        mock_choice.message.content = "NO"
         mock_response = MagicMock()
-        mock_response.text = "NO"
-        mock_client.models.generate_content.return_value = mock_response
+        mock_response.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_response
 
         result = is_on_topic("completely unrelated topic", api_key="test-key")
         assert result is False
 
-    @patch("guardrails.Client")
+    @patch("guardrails.OpenAI")
     def test_api_error_defaults_permissive(self, mock_client_class):
         """Test that API errors default to allowing the query."""
         mock_client = MagicMock()
         mock_client_class.return_value = mock_client
-        mock_client.models.generate_content.side_effect = Exception("API Error")
+        mock_client.chat.completions.create.side_effect = Exception("API Error")
 
         result = is_on_topic("some question", api_key="test-key")
         assert result is True
@@ -165,13 +171,15 @@ class TestOnTopic:
 class TestVerifyResponseGrounded:
     """Test hallucination verification."""
 
-    @patch("guardrails.Client")
+    @patch("guardrails.OpenAI")
     def test_grounded_response_passes(self, mock_client_class):
         mock_client = MagicMock()
         mock_client_class.return_value = mock_client
+        mock_choice = MagicMock()
+        mock_choice.message.content = "SAFE"
         mock_response = MagicMock()
-        mock_response.text = "NO"
-        mock_client.models.generate_content.return_value = mock_response
+        mock_response.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_response
 
         # Create mock chunks
         mock_chunk = MagicMock()
@@ -182,13 +190,15 @@ class TestVerifyResponseGrounded:
         )
         assert result is True
 
-    @patch("guardrails.Client")
+    @patch("guardrails.OpenAI")
     def test_hallucinated_response_fails(self, mock_client_class):
         mock_client = MagicMock()
         mock_client_class.return_value = mock_client
+        mock_choice = MagicMock()
+        mock_choice.message.content = "UNSAFE"
         mock_response = MagicMock()
-        mock_response.text = "YES"
-        mock_client.models.generate_content.return_value = mock_response
+        mock_response.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_response
 
         mock_chunk = MagicMock()
         mock_chunk.get_content.return_value = "GitLab values collaboration."
@@ -203,12 +213,12 @@ class TestVerifyResponseGrounded:
         result = verify_response_grounded("Some response", [], "test-key")
         assert result is True
 
-    @patch("guardrails.Client")
+    @patch("guardrails.OpenAI")
     def test_api_error_defaults_safe(self, mock_client_class):
         """On API error, default to allowing the response."""
         mock_client = MagicMock()
         mock_client_class.return_value = mock_client
-        mock_client.models.generate_content.side_effect = Exception("Rate limited")
+        mock_client.chat.completions.create.side_effect = Exception("Rate limited")
 
         mock_chunk = MagicMock()
         mock_chunk.get_content.return_value = "context"
@@ -216,14 +226,16 @@ class TestVerifyResponseGrounded:
         result = verify_response_grounded("response", [mock_chunk], "test-key")
         assert result is True
 
-    @patch("guardrails.Client")
+    @patch("guardrails.OpenAI")
     def test_handles_chunks_without_get_content(self, mock_client_class):
         """Handle chunks that are plain strings instead of node objects."""
         mock_client = MagicMock()
         mock_client_class.return_value = mock_client
+        mock_choice = MagicMock()
+        mock_choice.message.content = "SAFE"
         mock_response = MagicMock()
-        mock_response.text = "NO"
-        mock_client.models.generate_content.return_value = mock_response
+        mock_response.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_response
 
         # Pass string chunks instead of objects with get_content
         result = verify_response_grounded(

@@ -18,7 +18,11 @@ if os.path.exists("style.css"):
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "api_key" not in st.session_state:
-    st.session_state.api_key = os.environ.get("GEMINI_API_KEY", "")
+    st.session_state.api_key = os.environ.get("OPENAI_API_KEY", "")
+if "api_base" not in st.session_state:
+    st.session_state.api_base = os.environ.get("OPENAI_API_BASE", "")
+if "model_name" not in st.session_state:
+    st.session_state.model_name = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
 if "supabase_url" not in st.session_state:
     st.session_state.supabase_url = os.environ.get("SUPABASE_URL", "")
 if "supabase_key" not in st.session_state:
@@ -44,7 +48,15 @@ st.sidebar.title("🦊 GitLab Chatbot Setup")
 st.sidebar.markdown("---")
 
 api_key = st.sidebar.text_input(
-    "Gemini API Key", type="password", value=st.session_state.api_key
+    "LLM API Key", type="password", value=st.session_state.api_key
+)
+api_base = st.sidebar.text_input(
+    "LLM API Base URL", value=st.session_state.api_base,
+    placeholder="https://api.openai.com/v1"
+)
+model_name = st.sidebar.text_input(
+    "LLM Model Name", value=st.session_state.model_name,
+    placeholder="gpt-3.5-turbo"
 )
 supabase_url = st.sidebar.text_input(
     "Supabase URL", value=st.session_state.supabase_url
@@ -58,6 +70,10 @@ ollama_url = st.sidebar.text_input(
 
 if api_key:
     st.session_state.api_key = api_key
+if api_base:
+    st.session_state.api_base = api_base
+if model_name:
+    st.session_state.model_name = model_name
 if supabase_url:
     st.session_state.supabase_url = supabase_url
 if supabase_key:
@@ -68,9 +84,9 @@ if ollama_url:
 st.sidebar.markdown("---")
 st.sidebar.subheader("Connection Status")
 if st.session_state.api_key:
-    st.sidebar.markdown("✅ Gemini API Key set")
+    st.sidebar.markdown("✅ LLM API Key set")
 else:
-    st.sidebar.markdown("❌ Gemini API Key missing")
+    st.sidebar.markdown("❌ LLM API Key missing")
 if st.session_state.supabase_url and st.session_state.supabase_key:
     st.sidebar.markdown("✅ Supabase connected")
 else:
@@ -99,7 +115,7 @@ with tab1:
 
     if not rag:
         st.info(
-            "👋 Welcome! Please provide your **Gemini API Key**, **Supabase URL**, and "
+            "👋 Welcome! Please provide your **LLM API Key**, **Supabase URL**, and "
             "**Supabase API Key** in the sidebar to get started."
         )
     else:
@@ -254,7 +270,7 @@ with tab2:
         with col4:
             st.markdown(
                 f"<div class='metric-card'><h4>LLM Model</h4>"
-                f"<h3>Gemini 2.5 Flash</h3></div>",
+                f"<h3>{st.session_state.model_name}</h3></div>",
                 unsafe_allow_html=True,
             )
 

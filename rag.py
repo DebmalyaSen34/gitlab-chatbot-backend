@@ -1,24 +1,26 @@
+import os
 import time
 import requests
+from openai import OpenAI as OpenAIClient
 from supabase import create_client, Client
-# from google.genai import Client as GenAIClient  # Gemini embeddings (commented out in favor of local Ollama)
-from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
-from llama_index.core.postprocessor import LLMRerank
-from llama_index.core import Settings
-from llama_index.llms.gemini import Gemini
+from llama_index.core.schema import NodeWithScore, TextNode
 
 
 class RAGController:
-    """Retrieval-Augmented Generation controller using Supabase + Gemini."""
+    """Retrieval-Augmented Generation controller using Supabase + OpenAI-compatible LLM."""
 
     def __init__(self, api_key: str, postgres_connection_string: str = "", supabase_url: str = "", supabase_key: str = "", ollama_url: str = "http://localhost:11434", ollama_model: str = "embeddinggemma"):
         self.api_key = api_key
-        # self.genai_client = GenAIClient(api_key=api_key)  # Gemini embeddings
         self.ollama_url = ollama_url.rstrip("/")
         self.ollama_model = ollama_model
 
-        # Configure LlamaIndex LLM for reranking
-        Settings.llm = Gemini(model="models/gemini-2.5-flash", api_key=api_key)
+        # Configure OpenAI-compatible client (bypasses LlamaIndex model-name validation)
+        self.llm_model = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
+        client_kwargs = {"api_key": api_key}
+        llm_base_url = os.environ.get("OPENAI_API_BASE")
+        if llm_base_url:
+            client_kwargs["base_url"] = llm_base_url
+        self.llm_client = OpenAIClient(**client_kwargs)
 
         # Connect to Supabase
         if supabase_url and supabase_key:
@@ -43,13 +45,6 @@ class RAGController:
         resp.raise_for_status()
         return resp.json()["embeddings"][0]
 
-    # --- Gemini embeddings (commented out) ---
-    # def get_query_embedding(self, query: str) -> list[float]:
-    #     """Generate embedding for the query using gemini-embedding-001."""
-    #     result = self.genai_client.models.embed_content(
-    #         model="gemini-embedding-001", contents=query
-    #     )
-    #     return result.embeddings[0].values
 
     def vector_search(self, query_embedding: list[float], top_k: int = 15) -> list[dict]:
         """Search Supabase for similar embeddings using pgvector RPC."""
@@ -123,16 +118,41 @@ class RAGController:
             nodes.append(NodeWithScore(node=node, score=score))
         return nodes
 
+    def _llm_complete(self, prompt: str) -> str:
+        """Call the LLM directly via the OpenAI-compatible endpoint."""
+        response = self.llm_client.chat.completions.create(
+            model=self.llm_model,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.choices[0].message.content
+
     def rerank_nodes(
         self, nodes: list[NodeWithScore], query_str: str, top_n: int = 5
     ) -> list[NodeWithScore]:
-        """Rerank nodes using LLM-based reranker."""
+        """Rerank nodes using LLM-based scoring."""
         if not nodes:
             return []
 
         try:
-            reranker = LLMRerank(top_n=top_n)
-            reranked = reranker.postprocess_nodes(nodes, QueryBundle(query_str))
+            # Score each node with the LLM for relevance
+            scored_nodes = []
+            for node_with_score in nodes:
+                node = node_with_score.node
+                score_prompt = (
+                    f"Rate the relevance of the following text to the query on a scale of 0 to 10. "
+                    f"Reply with ONLY a number.\n\n"
+                    f"Query: {query_str}\n\n"
+                    f"Text: {node.get_content()[:1000]}"
+                )
+                try:
+                    score_text = self._llm_complete(score_prompt)
+                    score = float(score_text.strip().split()[0])
+                except (ValueError, IndexError):
+                    score = node_with_score.score or 0.0
+                scored_nodes.append(NodeWithScore(node=node, score=score))
+
+            scored_nodes.sort(key=lambda n: n.score or 0, reverse=True)
+            reranked = scored_nodes[:top_n]
             if not reranked:
                 raise ValueError("Reranker returned empty list")
             return reranked
@@ -197,7 +217,7 @@ class RAGController:
         )
 
         t0 = time.time()
-        response = Settings.llm.complete(prompt)
+        response = self._llm_complete(prompt)
         generation_time = time.time() - t0
         total_latency = time.time() - start_time
 

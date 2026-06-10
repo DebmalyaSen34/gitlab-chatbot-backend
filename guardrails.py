@@ -1,5 +1,6 @@
+import os
 import re
-from google.genai import Client
+from openai import OpenAI
 
 
 INJECTION_PATTERNS = [
@@ -61,9 +62,15 @@ def is_on_topic(query: str, api_key: str = None) -> bool:
     if not api_key:
         return True  # Permissive default when no API key
 
-    # Zero-shot classification using Gemini
+    # Zero-shot classification using OpenAI-compatible endpoint
     try:
-        client = Client(api_key=api_key)
+        client_kwargs = {"api_key": api_key}
+        base_url = os.environ.get("OPENAI_API_BASE")
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        client = OpenAI(**client_kwargs)
+
+        llm_model = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
         prompt = (
             "Determine if the user query is related to GitLab company, "
             "its handbook, product, engineering, culture, hiring, remote work, "
@@ -71,10 +78,12 @@ def is_on_topic(query: str, api_key: str = None) -> bool:
             "Respond with only YES or NO.\n\n"
             f"Query: {query}"
         )
-        response = client.models.generate_content(
-            model="gemini-2.5-flash", contents=prompt
+        response = client.chat.completions.create(
+            model=llm_model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=10,
         )
-        answer = response.text.strip().upper()
+        answer = response.choices[0].message.content.strip().upper()
         return "YES" in answer
     except Exception:
         # On API error, default to allowing the query
@@ -89,7 +98,13 @@ def verify_response_grounded(
         return True
 
     try:
-        client = Client(api_key=api_key)
+        client_kwargs = {"api_key": api_key}
+        base_url = os.environ.get("OPENAI_API_BASE")
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        client = OpenAI(**client_kwargs)
+
+        llm_model = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
         context_str = "\n---\n".join(
             [c.get_content() if hasattr(c, "get_content") else str(c) for c in context_chunks]
         )
@@ -109,10 +124,12 @@ def verify_response_grounded(
             "SAFE = the answer is reasonably grounded (minor inference/paraphrasing is OK).\n"
             "UNSAFE = the answer introduces fabricated facts or significantly contradicts the context."
         )
-        response = client.models.generate_content(
-            model="gemini-2.5-flash", contents=prompt
+        response = client.chat.completions.create(
+            model=llm_model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=10,
         )
-        eval_res = response.text.strip().upper()
+        eval_res = response.choices[0].message.content.strip().upper()
         print(f"[Guardrail] Fact-checker verdict: {eval_res}")
         # If the checker says UNSAFE, the response has fabricated content
         # Everything else (SAFE, "cannot determine", etc.) → safe
