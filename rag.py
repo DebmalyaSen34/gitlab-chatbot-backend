@@ -163,7 +163,7 @@ class RAGController:
         retrieved_nodes = self.build_nodes_from_results(search_results)
 
         # 3. Select top nodes by similarity score (no LLM reranking)
-        reranked_nodes = self.select_top_nodes(retrieved_nodes, top_n=5)
+        reranked_nodes = self.select_top_nodes(retrieved_nodes, top_n=8)
 
         # 4. Build context
         context_parts = []
@@ -176,17 +176,24 @@ class RAGController:
 
         # 5. Generate response
         prompt = (
-            "You are the GitLab Company Handbook Chatbot. You must answer the user query "
-            "based ONLY on the following context.\n\n"
+            "You are the GitLab Company Handbook Chatbot. You are an expert on GitLab's "
+            "handbook, policies, culture, and practices. You must answer the user's question "
+            "comprehensively based ONLY on the provided context.\n\n"
             f"Context:\n{context_str}\n\n"
             f"User Query: {query_str}\n\n"
-            "Requirements:\n"
-            "1. Keep the response factual and grounded in the context.\n"
-            "2. Cite your sources inline using markdown links (e.g. [Page Title](url)) "
+            "Instructions:\n"
+            "1. Give a **detailed, thorough answer**. Do NOT be vague or overly brief. "
+            "Extract and present all relevant information from the context — specific policies, "
+            "steps, names, values, processes, and examples.\n"
+            "2. Structure your answer with clear paragraphs or bullet points for readability.\n"
+            "3. Cite your sources inline using markdown links (e.g. [Page Title](url)) "
             "extracted from the source metadata.\n"
-            "3. If the context does not contain enough information to answer, say: "
-            "'I cannot find this information in the GitLab handbook.'\n"
-            "4. Be concise but thorough.\n\n"
+            "4. If the context only partially answers the question, share everything you "
+            "found and clearly state what aspects are not covered.\n"
+            "5. Only say 'I cannot find this information in the GitLab handbook' if the "
+            "context truly contains NOTHING relevant to the question.\n"
+            "6. Do NOT tell the user to 'visit the page for more details' — you ARE the "
+            "handbook assistant, so provide the details yourself.\n\n"
             "Answer:"
         )
 
