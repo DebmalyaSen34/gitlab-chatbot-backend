@@ -174,7 +174,7 @@ with tab1:
                             )
                         else:
                             # 3. RAG retrieval & generation
-                            result = rag.query(query)
+                            result = rag.query(query, query_embedding=query_embedding)
                             response_text = result["response"]
 
                             # 4. Output guardrail

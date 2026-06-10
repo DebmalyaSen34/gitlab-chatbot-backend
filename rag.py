@@ -126,48 +126,22 @@ class RAGController:
         )
         return response.choices[0].message.content
 
-    def rerank_nodes(
-        self, nodes: list[NodeWithScore], query_str: str, top_n: int = 5
+    def select_top_nodes(
+        self, nodes: list[NodeWithScore], top_n: int = 5
     ) -> list[NodeWithScore]:
-        """Rerank nodes using LLM-based scoring."""
+        """Select top-N nodes by vector similarity score (no LLM reranking)."""
         if not nodes:
             return []
+        sorted_nodes = sorted(nodes, key=lambda n: n.score or 0, reverse=True)
+        return sorted_nodes[:top_n]
 
-        try:
-            # Score each node with the LLM for relevance
-            scored_nodes = []
-            for node_with_score in nodes:
-                node = node_with_score.node
-                score_prompt = (
-                    f"Rate the relevance of the following text to the query on a scale of 0 to 10. "
-                    f"Reply with ONLY a number.\n\n"
-                    f"Query: {query_str}\n\n"
-                    f"Text: {node.get_content()[:1000]}"
-                )
-                try:
-                    score_text = self._llm_complete(score_prompt)
-                    score = float(score_text.strip().split()[0])
-                except (ValueError, IndexError):
-                    score = node_with_score.score or 0.0
-                scored_nodes.append(NodeWithScore(node=node, score=score))
-
-            scored_nodes.sort(key=lambda n: n.score or 0, reverse=True)
-            reranked = scored_nodes[:top_n]
-            if not reranked:
-                raise ValueError("Reranker returned empty list")
-            return reranked
-        except Exception as e:
-            print(f"Reranking failed, falling back to top-{top_n} by score: {e}")
-            # Fallback: return top-n by similarity score
-            sorted_nodes = sorted(nodes, key=lambda n: n.score or 0, reverse=True)
-            return sorted_nodes[:top_n]
-
-    def query(self, query_str: str) -> dict:
-        """Full RAG pipeline: embed → search → rerank → generate."""
+    def query(self, query_str: str, query_embedding: list[float] = None) -> dict:
+        """Full RAG pipeline: embed → search → select top → generate."""
         start_time = time.time()
 
         # 1. Generate query embedding
-        query_embedding = self.get_query_embedding(query_str)
+        if query_embedding is None:
+            query_embedding = self.get_query_embedding(query_str)
 
         # 2. Vector search in Supabase
         search_results = self.vector_search(query_embedding, top_k=15)
@@ -188,8 +162,8 @@ class RAGController:
 
         retrieved_nodes = self.build_nodes_from_results(search_results)
 
-        # 3. Rerank
-        reranked_nodes = self.rerank_nodes(retrieved_nodes, query_str, top_n=5)
+        # 3. Select top nodes by similarity score (no LLM reranking)
+        reranked_nodes = self.select_top_nodes(retrieved_nodes, top_n=5)
 
         # 4. Build context
         context_parts = []

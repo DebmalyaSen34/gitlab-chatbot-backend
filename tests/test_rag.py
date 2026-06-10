@@ -38,6 +38,7 @@ def create_rag(**kwargs):
     mock_supabase_cls.reset_mock()
     mock_openai_client_cls.reset_mock()
     _mock_llm_response("Test response.")
+    mock_llm_client.chat.completions.create.side_effect = None
     return RAGController(**defaults)
 
 
@@ -170,41 +171,38 @@ class TestVectorSearch:
         assert results == []
 
 
-class TestRerankNodes:
-    """Test node reranking."""
+class TestSelectTopNodes:
+    """Test top-N selection by vector similarity score."""
 
-    def test_rerank_scores_with_llm(self):
+    def test_selects_top_by_score(self):
         from llama_index.core.schema import NodeWithScore, TextNode
 
         rag = create_rag()
-        # LLM returns relevance scores
-        _mock_llm_response("8")
-
         nodes = [
-            NodeWithScore(node=TextNode(text="highly relevant"), score=0.5),
-            NodeWithScore(node=TextNode(text="less relevant"), score=0.9),
-        ]
-        result = rag.rerank_nodes(nodes, "query", top_n=1)
-        assert len(result) == 1
-
-    def test_rerank_falls_back_on_error(self):
-        from llama_index.core.schema import NodeWithScore, TextNode
-
-        rag = create_rag()
-        rag.llm_client.chat.completions.create.side_effect = Exception("API Error")
-
-        nodes = [
-            NodeWithScore(node=TextNode(text="high"), score=0.9),
             NodeWithScore(node=TextNode(text="low"), score=0.1),
+            NodeWithScore(node=TextNode(text="high"), score=0.9),
+            NodeWithScore(node=TextNode(text="mid"), score=0.5),
         ]
-        result = rag.rerank_nodes(nodes, "query", top_n=1)
-        assert len(result) == 1
+        result = rag.select_top_nodes(nodes, top_n=2)
+        assert len(result) == 2
         assert result[0].node.get_content() == "high"
+        assert result[1].node.get_content() == "mid"
 
-    def test_rerank_empty_nodes(self):
+    def test_empty_nodes(self):
         rag = create_rag()
-        result = rag.rerank_nodes([], "query")
+        result = rag.select_top_nodes([], top_n=5)
         assert result == []
+
+    def test_returns_all_when_fewer_than_top_n(self):
+        from llama_index.core.schema import NodeWithScore, TextNode
+
+        rag = create_rag()
+        nodes = [
+            NodeWithScore(node=TextNode(text="only one"), score=0.8),
+        ]
+        result = rag.select_top_nodes(nodes, top_n=5)
+        assert len(result) == 1
+
 
 
 class TestQuery:
@@ -235,15 +233,10 @@ class TestQuery:
         ]
         mock_supabase.rpc.return_value.execute.return_value = mock_search_result
 
-        # Mock LLM: reranking score + final response
-        mock_choice1 = MagicMock()
-        mock_choice1.message.content = "9"  # reranking score
-        mock_choice2 = MagicMock()
-        mock_choice2.message.content = "GitLab values collaboration."  # final response
-        mock_llm_client.chat.completions.create.side_effect = [
-            MagicMock(choices=[mock_choice1]),  # rerank call
-            MagicMock(choices=[mock_choice2]),   # generation call
-        ]
+        # Mock LLM: final response only (no reranking calls)
+        mock_choice = MagicMock()
+        mock_choice.message.content = "GitLab values collaboration."
+        mock_llm_client.chat.completions.create.return_value = MagicMock(choices=[mock_choice])
 
         result = rag.query("What are GitLab's values?")
 
@@ -278,3 +271,23 @@ class TestQuery:
 
         assert "response" in result
         assert result["num_chunks_retrieved"] == 0
+
+    @patch("rag.requests.post")
+    def test_query_uses_precomputed_embedding(self, mock_requests_post):
+        """Test query does not call Ollama embed if pre-computed embedding is provided."""
+        rag = create_rag()
+
+        # If embed is called, raise an exception to fail the test
+        mock_requests_post.side_effect = Exception("Ollama embed should not be called!")
+
+        # Mock Supabase search
+        mock_supabase = MagicMock()
+        rag.supabase = mock_supabase
+        mock_search_result = MagicMock()
+        mock_search_result.data = []
+        mock_supabase.rpc.return_value.execute.return_value = mock_search_result
+
+        # Call query with pre-computed embedding
+        result = rag.query("test query", query_embedding=[0.1] * 768)
+        assert result["num_chunks_retrieved"] == 0
+
