@@ -1,20 +1,51 @@
 import os
 import time
-import requests
+import json
 from openai import OpenAI as OpenAIClient
 from supabase import create_client, Client
 from llama_index.core.schema import NodeWithScore, TextNode
 
 
+# Shared vecs resources — lazy-initialized
+_vecs_collection = None
+_embed_model = None
+
+
+def _get_embed_model():
+    """Get or create a shared fastembed model."""
+    global _embed_model
+    if _embed_model is None:
+        from fastembed import TextEmbedding
+        _embed_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    return _embed_model
+
+
+def get_vecs_collection():
+    """Get or create a shared vecs collection."""
+    global _vecs_collection
+    if _vecs_collection is None:
+        import vecs
+        db_connection = os.environ.get("SUPABASE_DB_CONNECTION", "")
+        if not db_connection:
+            raise ValueError(
+                "SUPABASE_DB_CONNECTION env var required for vecs. "
+                "Format: postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres"
+            )
+        vx = vecs.create_client(db_connection)
+        _vecs_collection = vx.get_or_create_collection(
+            name="handbook_embeddings",
+            dimension=384,
+        )
+    return _vecs_collection
+
+
 class RAGController:
-    """Retrieval-Augmented Generation controller using Supabase + OpenAI-compatible LLM."""
+    """Retrieval-Augmented Generation controller using vecs + OpenAI-compatible LLM."""
 
-    def __init__(self, api_key: str, postgres_connection_string: str = "", supabase_url: str = "", supabase_key: str = "", ollama_url: str = "http://localhost:11434", ollama_model: str = "embeddinggemma"):
+    def __init__(self, api_key: str, postgres_connection_string: str = "", supabase_url: str = "", supabase_key: str = "", **kwargs):
         self.api_key = api_key
-        self.ollama_url = ollama_url.rstrip("/")
-        self.ollama_model = ollama_model
 
-        # Configure OpenAI-compatible client (bypasses LlamaIndex model-name validation)
+        # Configure OpenAI-compatible client
         self.llm_model = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
         client_kwargs = {"api_key": api_key}
         llm_base_url = os.environ.get("OPENAI_API_BASE")
@@ -22,89 +53,93 @@ class RAGController:
             client_kwargs["base_url"] = llm_base_url
         self.llm_client = OpenAIClient(**client_kwargs)
 
-        # Connect to Supabase
+        # Keep Supabase client for any non-vector operations
         if supabase_url and supabase_key:
             self.supabase: Client = create_client(
                 supabase_url=supabase_url, supabase_key=supabase_key
             )
-        elif postgres_connection_string:
-            # Fallback: create supabase from connection string components
-            # This is less ideal but works for backward compatibility
-            self.supabase = None
-            self._postgres_connection_string = postgres_connection_string
         else:
-            raise ValueError("Either supabase_url+supabase_key or postgres_connection_string required")
+            raise ValueError("supabase_url and supabase_key required")
 
     def get_query_embedding(self, query: str) -> list[float]:
-        """Generate embedding for the query using Ollama local model."""
-        resp = requests.post(
-            f"{self.ollama_url}/api/embed",
-            json={"model": self.ollama_model, "input": [query]},
-            timeout=60,
-        )
-        resp.raise_for_status()
-        return resp.json()["embeddings"][0]
-
+        """Generate embedding for the query using fastembed (local model)."""
+        model = _get_embed_model()
+        embeddings = list(model.embed([query]))
+        return embeddings[0].tolist()
 
     def vector_search(self, query_embedding: list[float], top_k: int = 15) -> list[dict]:
-        """Search Supabase for similar embeddings using pgvector RPC."""
-        if self.supabase:
-            try:
-                result = self.supabase.rpc(
-                    "match_data_embeddings",
-                    {
-                        "query_embedding": query_embedding,
-                        "match_count": top_k,
-                    },
-                ).execute()
-                return result.data if result.data else []
-            except Exception as e:
-                error_msg = str(e)
-                if "PGRST202" in error_msg or "match_data_embeddings" in error_msg:
-                    raise RuntimeError(
-                        "The match_data_embeddings function is not set up in Supabase. "
-                        "Please run the SQL in supabase_setup.sql in your Supabase SQL Editor "
-                        "(Dashboard → SQL Editor → New Query)."
-                    ) from e
-                raise
-        else:
-            # Direct PostgreSQL fallback
-            import psycopg2
-            import json
+        """Search vecs collection for similar embeddings."""
+        collection = get_vecs_collection()
+        results = collection.query(
+            data=query_embedding,
+            limit=top_k,
+            include_value=True,
+            include_metadata=True,
+        )
+        # Debug: check what vecs actually returns
+        if results:
+            r0 = results[0]
+            print(f"DEBUG result type={type(r0).__name__}, len={len(r0)}")
+            for i, v in enumerate(r0):
+                print(f"  [{i}] type={type(v).__name__}, value={repr(v)[:200]}")
 
-            conn = psycopg2.connect(self._postgres_connection_string)
+        # vecs returns (id, distance) tuples — metadata needs separate fetch
+        search_results = []
+        doc_ids = []
+        for result in results:
+            doc_id = result[0]
+            distance = float(result[1])
+            doc_ids.append(doc_id)
+            similarity = 1 - distance
+            search_results.append({
+                "id": doc_id,
+                "content": "",
+                "metadata": {},
+                "file_path": "",
+                "similarity": similarity,
+            })
+
+        # Fetch metadata from DB for all returned doc IDs
+        if doc_ids:
             try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        SELECT content, metadata, file_path,
-                               1 - (embedding <=> %s::vector) as similarity
-                        FROM data_embeddings
-                        ORDER BY embedding <=> %s::vector
-                        LIMIT %s
-                        """,
-                        (json.dumps(query_embedding), json.dumps(query_embedding), top_k),
-                    )
-                    rows = cur.fetchall()
-                    return [
-                        {
-                            "content": row[0],
-                            "metadata": row[1],
-                            "file_path": row[2],
-                            "similarity": row[3],
-                        }
-                        for row in rows
-                    ]
-            finally:
+                import psycopg2
+                conn = psycopg2.connect(os.environ.get("SUPABASE_DB_CONNECTION", ""))
+                cur = conn.cursor()
+                cur.execute(
+                    'SELECT id, metadata FROM vecs."handbook_embeddings" WHERE id = ANY(%s)',
+                    (doc_ids,)
+                )
+                meta_map = {row[0]: row[1] for row in cur.fetchall()}
+                cur.close()
                 conn.close()
+                for r in search_results:
+                    if r["id"] in meta_map:
+                        metadata = meta_map[r["id"]]
+                        if isinstance(metadata, str):
+                            import json as _json
+                            metadata = _json.loads(metadata)
+                        r["metadata"] = metadata
+                        r["content"] = metadata.get("content", "")
+                        r["file_path"] = metadata.get("file_path", "")
+            except Exception as e:
+                print(f"Warning: Failed to fetch metadata: {e}")
+            content = metadata.get("content", "") if metadata else ""
+            search_results.append({
+                "id": doc_id,
+                "content": content,
+                "metadata": metadata or {},
+                "file_path": metadata.get("file_path", "") if metadata else "",
+                "similarity": similarity,
+            })
+
+        return search_results
 
     def build_nodes_from_results(self, search_results: list[dict]) -> list[NodeWithScore]:
-        """Convert Supabase search results to LlamaIndex NodeWithScore objects."""
+        """Convert search results to LlamaIndex NodeWithScore objects."""
         nodes = []
         for result in search_results:
             metadata = result.get("metadata", {})
             if isinstance(metadata, str):
-                import json
                 try:
                     metadata = json.loads(metadata)
                 except json.JSONDecodeError:
@@ -129,7 +164,7 @@ class RAGController:
     def select_top_nodes(
         self, nodes: list[NodeWithScore], top_n: int = 5
     ) -> list[NodeWithScore]:
-        """Select top-N nodes by vector similarity score (no LLM reranking)."""
+        """Select top-N nodes by vector similarity score."""
         if not nodes:
             return []
         sorted_nodes = sorted(nodes, key=lambda n: n.score or 0, reverse=True)
@@ -143,7 +178,7 @@ class RAGController:
         if query_embedding is None:
             query_embedding = self.get_query_embedding(query_str)
 
-        # 2. Vector search in Supabase
+        # 2. Vector search via vecs
         search_results = self.vector_search(query_embedding, top_k=15)
 
         # Filter by minimum similarity threshold
@@ -162,7 +197,7 @@ class RAGController:
 
         retrieved_nodes = self.build_nodes_from_results(search_results)
 
-        # 3. Select top nodes by similarity score (no LLM reranking)
+        # 3. Select top nodes by similarity score
         reranked_nodes = self.select_top_nodes(retrieved_nodes, top_n=8)
 
         # 4. Build context

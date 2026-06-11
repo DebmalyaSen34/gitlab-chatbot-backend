@@ -14,13 +14,12 @@ INJECTION_PATTERNS = [
     r"override\s+(?:your\s+)?(?:safety|rules|guidelines)",
     r"disregard\s+(?:all\s+)?(?:your\s+)?(?:prior|previous|earlier)\s+(?:instructions|rules)",
     r"act\s+as\s+(?:if\s+)?you\s+(?:have\s+)?no\s+(?:restrictions|rules|limits)",
-    r"pretend\s+you\s+(?:are|have)\s+no\s+(?:rules|restrictions|guidelines)",
+    r"pretend\s+you\s+are\s+(?:no|without)\s+(?:rules|restrictions|guidelines)",
     r"jailbreak",
     r"DAN\s+mode",
     r"developer\s+mode",
 ]
 
-# Broad set of GitLab-related keywords for topic detection
 GITLAB_TOPIC_KEYWORDS = [
     "gitlab", "handbook", "value", "values", "remote", "direction", "hiring",
     "onboarding", "ceo", "shadow", "process", "culture", "diversity",
@@ -38,6 +37,22 @@ GITLAB_TOPIC_KEYWORDS = [
     "documentation", "wiki", "runbook", "playbook",
 ]
 
+# Shared OpenAI client — created once, reused across all calls
+_llm_client: OpenAI | None = None
+
+
+def _get_llm_client() -> OpenAI:
+    """Get or create a shared OpenAI client."""
+    global _llm_client
+    if _llm_client is None:
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        client_kwargs = {"api_key": api_key}
+        base_url = os.environ.get("OPENAI_API_BASE")
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        _llm_client = OpenAI(**client_kwargs)
+    return _llm_client
+
 
 def is_prompt_injection(query: str) -> bool:
     """Check if the query contains prompt injection patterns."""
@@ -47,47 +62,12 @@ def is_prompt_injection(query: str) -> bool:
     return False
 
 
-def is_on_topic(query: str, api_key: str = None) -> bool:
-    """Check if the query is related to GitLab topics."""
+def is_on_topic(query: str) -> bool:
+    """Check if the query is related to GitLab topics. Keyword-only, no LLM fallback."""
     if not query or not query.strip():
         return False
-
     query_lower = query.lower()
-
-    # Fast local keyword check
-    if any(kw in query_lower for kw in GITLAB_TOPIC_KEYWORDS):
-        return True
-
-    # If no API key, rely on keyword check only
-    if not api_key:
-        return True  # Permissive default when no API key
-
-    # Zero-shot classification using OpenAI-compatible endpoint
-    try:
-        client_kwargs = {"api_key": api_key}
-        base_url = os.environ.get("OPENAI_API_BASE")
-        if base_url:
-            client_kwargs["base_url"] = base_url
-        client = OpenAI(**client_kwargs)
-
-        llm_model = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
-        prompt = (
-            "Determine if the user query is related to GitLab company, "
-            "its handbook, product, engineering, culture, hiring, remote work, "
-            "values, or internal processes. "
-            "Respond with only YES or NO.\n\n"
-            f"Query: {query}"
-        )
-        response = client.chat.completions.create(
-            model=llm_model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=10,
-        )
-        answer = response.choices[0].message.content.strip().upper()
-        return "YES" in answer
-    except Exception:
-        # On API error, default to allowing the query
-        return True
+    return any(kw in query_lower for kw in GITLAB_TOPIC_KEYWORDS)
 
 
 def verify_response_grounded(
@@ -98,12 +78,7 @@ def verify_response_grounded(
         return True
 
     try:
-        client_kwargs = {"api_key": api_key}
-        base_url = os.environ.get("OPENAI_API_BASE")
-        if base_url:
-            client_kwargs["base_url"] = base_url
-        client = OpenAI(**client_kwargs)
-
+        client = _get_llm_client()
         llm_model = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
         context_str = "\n---\n".join(
             [c.get_content() if hasattr(c, "get_content") else str(c) for c in context_chunks]
@@ -131,9 +106,6 @@ def verify_response_grounded(
         )
         eval_res = response.choices[0].message.content.strip().upper()
         print(f"[Guardrail] Fact-checker verdict: {eval_res}")
-        # If the checker says UNSAFE, the response has fabricated content
-        # Everything else (SAFE, "cannot determine", etc.) → safe
         return "UNSAFE" not in eval_res
     except Exception:
-        # On API error, default to allowing the response
         return True
