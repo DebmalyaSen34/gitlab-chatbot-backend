@@ -52,6 +52,15 @@ class SemanticCache:
         else:
             self._matrix = np.empty((0, self.dimension), dtype=np.float32)
 
+    @staticmethod
+    def cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
+        """Compute cosine similarity between two vectors."""
+        norm_a = np.linalg.norm(vec_a)
+        norm_b = np.linalg.norm(vec_b)
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return float(np.dot(vec_a, vec_b) / (norm_a * norm_b))
+
     def store(self, query: str, embedding: list, response: str):
         """Store in SQLite and append to in-memory matrix."""
         emb_array = np.array(embedding, dtype=np.float32)

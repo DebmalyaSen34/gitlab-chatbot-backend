@@ -35,6 +35,16 @@ GITLAB_TOPIC_KEYWORDS = [
     "team", "department", "division", "group", "stage",
     "section", "infrastructure", "design", "ux", "research",
     "documentation", "wiki", "runbook", "playbook",
+    "enterprise", "ai", "artificial intelligence", "machine learning",
+    "strategy", "vision", "mission", "goal", "objective",
+    "policy", "guideline", "principle", "standard",
+    "customer", "user", "stakeholder", "partner",
+    "release", "deploy", "feature", "bug", "issue",
+    "sprint", "agile", "scrum", "kanban", "milestone",
+    "salary", "wage", "bonus", "promotion", "career",
+    "manager", "lead", "director", "vp", "executive",
+    "meeting", "standup", "retrospective", "demo",
+    "training", "mentor", "coach", "growth",
 ]
 
 # Shared OpenAI client — created once, reused across all calls
@@ -63,11 +73,8 @@ def is_prompt_injection(query: str) -> bool:
 
 
 def is_on_topic(query: str) -> bool:
-    """Check if the query is related to GitLab topics. Keyword-only, no LLM fallback."""
-    if not query or not query.strip():
-        return False
-    query_lower = query.lower()
-    return any(kw in query_lower for kw in GITLAB_TOPIC_KEYWORDS)
+    """Always return True — topic filtering is handled by vector search similarity threshold."""
+    return True
 
 
 def verify_response_grounded(

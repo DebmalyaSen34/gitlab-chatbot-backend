@@ -76,53 +76,17 @@ class RAGController:
             include_value=True,
             include_metadata=True,
         )
-        # Debug: check what vecs actually returns
-        if results:
-            r0 = results[0]
-            print(f"DEBUG result type={type(r0).__name__}, len={len(r0)}")
-            for i, v in enumerate(r0):
-                print(f"  [{i}] type={type(v).__name__}, value={repr(v)[:200]}")
-
-        # vecs returns (id, distance) tuples — metadata needs separate fetch
+        # vecs with include_value=True, include_metadata=True returns (id, metadata, distance)
         search_results = []
-        doc_ids = []
         for result in results:
-            doc_id = result[0]
-            distance = float(result[1])
-            doc_ids.append(doc_id)
-            similarity = 1 - distance
-            search_results.append({
-                "id": doc_id,
-                "content": "",
-                "metadata": {},
-                "file_path": "",
-                "similarity": similarity,
-            })
-
-        # Fetch metadata from DB for all returned doc IDs
-        if doc_ids:
-            try:
-                import psycopg2
-                conn = psycopg2.connect(os.environ.get("SUPABASE_DB_CONNECTION", ""))
-                cur = conn.cursor()
-                cur.execute(
-                    'SELECT id, metadata FROM vecs."handbook_embeddings" WHERE id = ANY(%s)',
-                    (doc_ids,)
-                )
-                meta_map = {row[0]: row[1] for row in cur.fetchall()}
-                cur.close()
-                conn.close()
-                for r in search_results:
-                    if r["id"] in meta_map:
-                        metadata = meta_map[r["id"]]
-                        if isinstance(metadata, str):
-                            import json as _json
-                            metadata = _json.loads(metadata)
-                        r["metadata"] = metadata
-                        r["content"] = metadata.get("content", "")
-                        r["file_path"] = metadata.get("file_path", "")
-            except Exception as e:
-                print(f"Warning: Failed to fetch metadata: {e}")
+            if len(result) == 3:
+                doc_id, metadata, distance = result
+            elif len(result) == 2:
+                doc_id, distance = result
+                metadata = {}
+            else:
+                continue
+            similarity = 1 - float(distance)
             content = metadata.get("content", "") if metadata else ""
             search_results.append({
                 "id": doc_id,

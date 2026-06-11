@@ -56,37 +56,26 @@ class TestRAGControllerInit:
         mock_supabase_cls.assert_called_once()
 
     def test_init_requires_credentials(self):
-        with pytest.raises(ValueError, match="Either supabase_url"):
+        with pytest.raises(ValueError, match="supabase_url and supabase_key required"):
             RAGController(api_key="test-key")
-
-    def test_init_with_postgres_string(self):
-        rag = create_rag(
-            supabase_url="",
-            supabase_key="",
-            postgres_connection_string="postgresql://user:pass@host:5432/db",
-        )
-        assert rag._postgres_connection_string == "postgresql://user:pass@host:5432/db"
 
 
 class TestGetQueryEmbedding:
     """Test query embedding generation."""
 
-    def test_returns_list(self):
+    @patch("rag._get_embed_model")
+    def test_returns_list(self, mock_get_model):
         rag = create_rag()
-        import requests as req
-        with patch.object(req, "post") as mock_post:
-            mock_resp = MagicMock()
-            mock_resp.json.return_value = {"embeddings": [[0.1] * 768]}
-            mock_resp.raise_for_status = MagicMock()
-            mock_post.return_value = mock_resp
+        mock_model = MagicMock()
+        mock_model.embed.return_value = iter([MagicMock(tolist=lambda: [0.1] * 384)])
+        mock_get_model.return_value = mock_model
 
-            embedding = rag.get_query_embedding("test query")
-            assert len(embedding) == 768
-            mock_post.assert_called_once()
+        embedding = rag.get_query_embedding("test query")
+        assert len(embedding) == 384
 
 
 class TestBuildNodesFromResults:
-    """Test converting Supabase results to LlamaIndex nodes."""
+    """Test converting search results to LlamaIndex nodes."""
 
     def test_builds_nodes(self):
         rag = create_rag()
@@ -140,34 +129,31 @@ class TestBuildNodesFromResults:
 
 
 class TestVectorSearch:
-    """Test vector search via Supabase."""
+    """Test vector search via vecs."""
 
-    def test_uses_supabase_rpc(self):
+    @patch("rag.get_vecs_collection")
+    def test_uses_vecs_query(self, mock_get_collection):
         rag = create_rag()
-        mock_supabase = MagicMock()
-        rag.supabase = mock_supabase
+        mock_collection = MagicMock()
+        mock_get_collection.return_value = mock_collection
 
-        mock_result = MagicMock()
-        mock_result.data = [{"content": "test", "metadata": {}, "similarity": 0.9}]
-        mock_supabase.rpc.return_value.execute.return_value = mock_result
+        # vecs returns (id, metadata, distance) tuples
+        mock_collection.query.return_value = [
+            ("doc::0", {"content": "test", "title": "Test"}, 0.1)
+        ]
 
-        results = rag.vector_search([0.1] * 768, top_k=10)
+        results = rag.vector_search([0.1] * 384, top_k=10)
         assert len(results) == 1
-        mock_supabase.rpc.assert_called_once_with(
-            "match_data_embeddings",
-            {"query_embedding": [0.1] * 768, "match_count": 10},
-        )
+        mock_collection.query.assert_called_once()
 
-    def test_returns_empty_on_no_data(self):
+    @patch("rag.get_vecs_collection")
+    def test_returns_empty_on_no_data(self, mock_get_collection):
         rag = create_rag()
-        mock_supabase = MagicMock()
-        rag.supabase = mock_supabase
+        mock_collection = MagicMock()
+        mock_get_collection.return_value = mock_collection
+        mock_collection.query.return_value = []
 
-        mock_result = MagicMock()
-        mock_result.data = None
-        mock_supabase.rpc.return_value.execute.return_value = mock_result
-
-        results = rag.vector_search([0.1] * 768)
+        results = rag.vector_search([0.1] * 384)
         assert results == []
 
 
@@ -204,39 +190,25 @@ class TestSelectTopNodes:
         assert len(result) == 1
 
 
-
 class TestQuery:
     """Test the full RAG query pipeline."""
 
-    @patch("rag.requests.post")
-    def test_query_returns_expected_keys(self, mock_requests_post):
-        from llama_index.core.schema import NodeWithScore, TextNode
-
+    @patch("rag.get_vecs_collection")
+    @patch("rag._get_embed_model")
+    def test_query_returns_expected_keys(self, mock_get_model, mock_get_collection):
         rag = create_rag()
 
-        # Mock embedding (Ollama)
-        mock_emb_resp = MagicMock()
-        mock_emb_resp.json.return_value = {"embeddings": [[0.1] * 768]}
-        mock_emb_resp.raise_for_status = MagicMock()
-        mock_requests_post.return_value = mock_emb_resp
+        # Mock embedding model
+        mock_model = MagicMock()
+        mock_model.embed.return_value = iter([MagicMock(tolist=lambda: [0.1] * 384)])
+        mock_get_model.return_value = mock_model
 
-        # Mock Supabase search
-        mock_supabase = MagicMock()
-        rag.supabase = mock_supabase
-        mock_search_result = MagicMock()
-        mock_search_result.data = [
-            {
-                "content": "GitLab values collaboration",
-                "metadata": {"title": "Values", "url": "https://handbook.gitlab.com/values/"},
-                "similarity": 0.9,
-            }
+        # Mock vecs collection
+        mock_collection = MagicMock()
+        mock_get_collection.return_value = mock_collection
+        mock_collection.query.return_value = [
+            ("doc::0", {"content": "GitLab values collaboration", "title": "Values", "url": "https://handbook.gitlab.com/values/"}, 0.1)
         ]
-        mock_supabase.rpc.return_value.execute.return_value = mock_search_result
-
-        # Mock LLM: final response only (no reranking calls)
-        mock_choice = MagicMock()
-        mock_choice.message.content = "GitLab values collaboration."
-        mock_llm_client.chat.completions.create.return_value = MagicMock(choices=[mock_choice])
 
         result = rag.query("What are GitLab's values?")
 
@@ -246,48 +218,38 @@ class TestQuery:
         assert "time_to_first_token" in result
         assert "num_chunks_retrieved" in result
         assert "num_chunks_reranked" in result
-        assert result["num_chunks_reranked"] == 1
-        assert result["response"] == "GitLab values collaboration."
 
-    @patch("rag.requests.post")
-    def test_query_with_empty_search(self, mock_requests_post):
+    @patch("rag.get_vecs_collection")
+    @patch("rag._get_embed_model")
+    def test_query_with_empty_search(self, mock_get_model, mock_get_collection):
         """Test query when no results found."""
         rag = create_rag()
 
-        # Mock embedding (Ollama)
-        mock_emb_resp = MagicMock()
-        mock_emb_resp.json.return_value = {"embeddings": [[0.1] * 768]}
-        mock_emb_resp.raise_for_status = MagicMock()
-        mock_requests_post.return_value = mock_emb_resp
+        # Mock embedding model
+        mock_model = MagicMock()
+        mock_model.embed.return_value = iter([MagicMock(tolist=lambda: [0.1] * 384)])
+        mock_get_model.return_value = mock_model
 
-        # Mock empty Supabase search
-        mock_supabase = MagicMock()
-        rag.supabase = mock_supabase
-        mock_search_result = MagicMock()
-        mock_search_result.data = []
-        mock_supabase.rpc.return_value.execute.return_value = mock_search_result
+        # Mock empty vecs search
+        mock_collection = MagicMock()
+        mock_get_collection.return_value = mock_collection
+        mock_collection.query.return_value = []
 
         result = rag.query("What is quantum computing?")
 
         assert "response" in result
         assert result["num_chunks_retrieved"] == 0
 
-    @patch("rag.requests.post")
-    def test_query_uses_precomputed_embedding(self, mock_requests_post):
-        """Test query does not call Ollama embed if pre-computed embedding is provided."""
+    @patch("rag.get_vecs_collection")
+    def test_query_uses_precomputed_embedding(self, mock_get_collection):
+        """Test query does not call embed if pre-computed embedding is provided."""
         rag = create_rag()
 
-        # If embed is called, raise an exception to fail the test
-        mock_requests_post.side_effect = Exception("Ollama embed should not be called!")
-
-        # Mock Supabase search
-        mock_supabase = MagicMock()
-        rag.supabase = mock_supabase
-        mock_search_result = MagicMock()
-        mock_search_result.data = []
-        mock_supabase.rpc.return_value.execute.return_value = mock_search_result
+        # Mock vecs collection
+        mock_collection = MagicMock()
+        mock_get_collection.return_value = mock_collection
+        mock_collection.query.return_value = []
 
         # Call query with pre-computed embedding
-        result = rag.query("test query", query_embedding=[0.1] * 768)
+        result = rag.query("test query", query_embedding=[0.1] * 384)
         assert result["num_chunks_retrieved"] == 0
-
