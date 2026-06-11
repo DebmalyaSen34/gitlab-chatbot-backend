@@ -28,9 +28,16 @@ async def lifespan(app: FastAPI):
     supabase_key = os.environ.get("SUPABASE_API_KEY", "")
 
     db_connection = os.environ.get("SUPABASE_DB_CONNECTION", "")
-    cache = SemanticCache(db_connection=db_connection) if db_connection else None
-    if cache is None:
+    if db_connection:
+        try:
+            cache = SemanticCache(db_connection=db_connection)
+            logger.info("Cache initialized")
+        except Exception as e:
+            logger.error(f"Failed to init cache: {e}")
+            cache = None
+    else:
         logger.warning("Missing SUPABASE_DB_CONNECTION — cache not initialized")
+        cache = None
 
     if api_key and supabase_url and supabase_key:
         try:
