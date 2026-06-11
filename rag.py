@@ -76,11 +76,11 @@ class RAGController:
             include_value=True,
             include_metadata=True,
         )
-        # vecs with include_value=True, include_metadata=True returns (id, metadata, distance)
+        # vecs returns: (id, distance, metadata) when include_value=True, include_metadata=True
         search_results = []
         for result in results:
             if len(result) == 3:
-                doc_id, metadata, distance = result
+                doc_id, distance, metadata = result
             elif len(result) == 2:
                 doc_id, distance = result
                 metadata = {}

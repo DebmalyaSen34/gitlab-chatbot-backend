@@ -137,9 +137,9 @@ class TestVectorSearch:
         mock_collection = MagicMock()
         mock_get_collection.return_value = mock_collection
 
-        # vecs returns (id, metadata, distance) tuples
+        # vecs returns (id, distance, metadata) tuples
         mock_collection.query.return_value = [
-            ("doc::0", {"content": "test", "title": "Test"}, 0.1)
+            ("doc::0", 0.1, {"content": "test", "title": "Test"})
         ]
 
         results = rag.vector_search([0.1] * 384, top_k=10)
@@ -207,7 +207,7 @@ class TestQuery:
         mock_collection = MagicMock()
         mock_get_collection.return_value = mock_collection
         mock_collection.query.return_value = [
-            ("doc::0", {"content": "GitLab values collaboration", "title": "Values", "url": "https://handbook.gitlab.com/values/"}, 0.1)
+            ("doc::0", 0.1, {"content": "GitLab values collaboration", "title": "Values", "url": "https://handbook.gitlab.com/values/"})
         ]
 
         result = rag.query("What are GitLab's values?")
