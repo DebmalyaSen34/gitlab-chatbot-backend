@@ -85,6 +85,37 @@ def get_file_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def merge_paragraphs(paragraphs: list[str], min_chars: int = 500, max_chars: int = 1500) -> list[str]:
+    """Merge small paragraphs into chunks of min_chars–max_chars."""
+    if not paragraphs:
+        return []
+
+    chunks = []
+    current = ""
+
+    for para in paragraphs:
+        # If adding this paragraph exceeds max, finalize current chunk
+        if current and len(current) + len(para) + 2 > max_chars:
+            if len(current) >= min_chars:
+                chunks.append(current.strip())
+                current = para
+            else:
+                # Current is too small to stand alone, keep accumulating
+                current += "\n\n" + para
+        else:
+            current = current + "\n\n" + para if current else para
+
+    # Don't forget the last chunk
+    if current.strip():
+        # If it's too small, merge with the previous chunk instead
+        if len(current) < min_chars and chunks:
+            chunks[-1] += "\n\n" + current.strip()
+        else:
+            chunks.append(current.strip())
+
+    return chunks
+
+
 def fetch_markdown_files_from_repo(
     dirs: list[str], branch: str = "main", token: Optional[str] = None
 ) -> dict[str, str]:
@@ -187,6 +218,23 @@ def main():
         default=os.environ.get("SUPABASE_DB_CONNECTION"),
         help="PostgreSQL connection string for Supabase (required for vecs)",
     )
+    parser.add_argument(
+        "--min-chunk",
+        type=int,
+        default=500,
+        help="Minimum chunk size in characters (default: 500)",
+    )
+    parser.add_argument(
+        "--max-chunk",
+        type=int,
+        default=1500,
+        help="Maximum chunk size in characters (default: 1500)",
+    )
+    parser.add_argument(
+        "--clear",
+        action="store_true",
+        help="Delete all existing embeddings before ingesting",
+    )
     args = parser.parse_args()
 
     if not args.db_connection:
@@ -232,22 +280,33 @@ def main():
         dimension=384,
     )
 
-    print("\n[3/4] Chunking files...")
+    # Optionally clear existing collection
+    if args.clear:
+        print("\n  Clearing existing embeddings...")
+        vx.delete_collection("handbook_embeddings")
+        collection = vx.get_or_create_collection(
+            name="handbook_embeddings",
+            dimension=384,
+        )
+        print("  Done.")
+
+    print(f"\n[3/4] Chunking files (min={args.min_chunk}, max={args.max_chunk} chars)...")
     embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
 
     # Phase 1: Collect all chunks with metadata (no embedding yet)
     all_chunks = []       # flat list of chunk texts
     chunk_meta = []       # parallel list of (doc_id, metadata)
     stats = {"files": 0, "skipped": 0}
-    total = len(files)
 
     for i, (file_path, content) in enumerate(files.items(), 1):
         clean_text = clean_markdown(content)
-        if len(clean_text) < 50:
+        if len(clean_text) < 100:
             stats["skipped"] += 1
             continue
 
-        chunks = [c.strip() for c in clean_text.split("\n\n") if len(c.strip()) > 100]
+        # Split into paragraphs, filter out tiny ones, then merge
+        paragraphs = [p.strip() for p in clean_text.split("\n\n") if len(p.strip()) > 20]
+        chunks = merge_paragraphs(paragraphs, min_chars=args.min_chunk, max_chars=args.max_chunk)
         if not chunks:
             stats["skipped"] += 1
             continue
