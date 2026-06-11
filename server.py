@@ -27,7 +27,10 @@ async def lifespan(app: FastAPI):
     supabase_url = os.environ.get("SUPABASE_URL", "")
     supabase_key = os.environ.get("SUPABASE_API_KEY", "")
 
-    cache = SemanticCache()
+    db_connection = os.environ.get("SUPABASE_DB_CONNECTION", "")
+    cache = SemanticCache(db_connection=db_connection) if db_connection else None
+    if cache is None:
+        logger.warning("Missing SUPABASE_DB_CONNECTION — cache not initialized")
 
     if api_key and supabase_url and supabase_key:
         try:
@@ -52,10 +55,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="GitLab Handbook API", lifespan=lifespan)
 
-ALLOWED_ORIGINS = os.environ.get(
-    "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://localhost:5173",
-).split(",")
+_origins_raw = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
+ALLOWED_ORIGINS = ["*"] if _origins_raw.strip() == "*" else [o.strip() for o in _origins_raw.split(",")]
 
 app.add_middleware(
     CORSMiddleware,
@@ -104,6 +105,11 @@ def _run_guardrail_async(response_text: str, chunks: list, api_key: str, respons
 
 
 # ── Endpoints ──
+@app.get("/")
+async def root():
+    return {"status": "ok"}
+
+
 @app.get("/api/health")
 async def health():
     return {
