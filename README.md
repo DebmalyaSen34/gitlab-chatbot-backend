@@ -258,7 +258,7 @@ graph LR
 ## Project Structure
 
 ```
-gitlab-chatbot/
+gitlab-chatbot-backend/
 ├── app.py                   
 ├── server.py                
 ├── rag.py                   
@@ -691,36 +691,61 @@ services:
 
 ### Response Time Breakdown
 
+The query pipeline has two execution paths depending on whether the cache hits. The cache hit path skips retrieval and generation entirely, returning in under 200ms.
+
 ```mermaid
-gantt
-    title Query Response Time Breakdown
-    dateFormat X
-    axisFormat %Lms
+flowchart TD
+    Q(["Query arrives"]) --> G{"Guardrails<br/>< 1ms"}
+    G -->|"Blocked"| X(["Reject"])
+    G -->|"Passed"| E["Embed query<br/>~100ms"]
 
-    section Cache Hit
-    Prompt Injection Check   :done, 0, 1
-    Query Embedding          :done, 1, 101
-    Cache Lookup             :done, 101, 106
-    Return Response          :done, 106, 200
+    E --> C{"Cache lookup<br/>~5ms"}
+    C -->|"HIT"| CR(["Return cached response<br/>Total: ~100ms"])
+    C -->|"MISS"| V["Vector search<br/>~200-500ms"]
 
-    section Cache Miss
-    Prompt Injection Check   :done, 0, 1
-    Query Embedding          :done, 1, 101
-    Cache Lookup             :done, 101, 106
-    Vector Search            :done, 106, 506
-    LLM Generation           :active, 506, 25506
-    Return Response          :done, 25506, 26000
+    V --> F["Filter + select<br/>~1ms"]
+    F --> L["LLM generation<br/>~15-25s"]
+    L --> R(["Return response<br/>Total: ~16-26s"])
+
+    R --> CA["Store in cache"]
+    R --> GU["Output guardrail<br/>(async, non-blocking)"]
+
+    style G fill:#888,stroke:#555,color:#fff
+    style E fill:#999,stroke:#666,color:#000
+    style C fill:#888,stroke:#555,color:#fff
+    style V fill:#999,stroke:#666,color:#000
+    style F fill:#aaa,stroke:#777,color:#000
+    style L fill:#777,stroke:#555,color:#fff
+    style CR fill:#aaa,stroke:#666,color:#000
+    style R fill:#999,stroke:#666,color:#000
+    style X fill:#777,stroke:#555,color:#fff
+    style CA fill:#aaa,stroke:#777,color:#000
+    style GU fill:#aaa,stroke:#777,color:#000
 ```
 
-| Component | Latency | Notes |
-|-----------|---------|-------|
-| Prompt injection check | < 1ms | Regex-based, no LLM call |
-| Query embedding | ~100ms | fastembed on CPU |
-| Cache lookup | ~5ms | numpy matrix-vector product |
-| Vector search | ~200-500ms | Supabase pgvector with HNSW |
-| LLM generation | ~15-25s | Depends on model and provider |
-| **Cache hit total** | **~100-200ms** | Embedding + cache lookup |
-| **Cache miss total** | **~16-26s** | Full pipeline |
+**Per-component latency:**
+
+| Step | Latency | What happens |
+|------|---------|-------------|
+| Guardrails | < 1ms | 14 regex patterns checked against the query |
+| Embed query | ~100ms | fastembed generates 384-dim vector on CPU |
+| Cache lookup | ~5ms | numpy matrix-vector dot product against all cached embeddings |
+| Vector search | ~200-500ms | Supabase pgvector HNSW index returns top-15 chunks |
+| Filter + select | ~1ms | Drop below 0.3 similarity, keep top-8 |
+| LLM generation | ~30-40s | OpenAI-compatible API call with context prompt |
+| Output guardrail | Non-blocking | LLM verifies grounding in background thread |
+
+**Path comparison:**
+
+| Metric | Cache Hit | Cache Miss |
+|--------|-----------|------------|
+| Steps executed | Guardrails, embed, cache lookup | Full pipeline |
+| LLM calls | 0 | 1 (generation) + 1 (async guardrail) |
+| DB queries | 0 | 1 (vector search) |
+| Total latency | ~100ms | ~16-26s |
+| Speedup | **160-260x faster** than cache miss | Baseline |
+
+The cache hit path avoids the two most expensive operations — vector search and LLM generation — which together account for 99.5% of cache miss latency. This is why the semantic cache (threshold: 0.95) is the single highest-impact optimization in the system.
 
 ### Key Design Decisions
 
@@ -736,5 +761,5 @@ gantt
 
 ### Data Source
 
-- **Repository:** `gitlab-com/content-sites/handbook` (public, Apache 2.0 license) + GitLab Direction Pages
+- **Repository:** `gitlab-com/content-sites/handbook` (public, Apache 2.0 license) + `GitLab Direction Pages`
 - **Size:** 2,200+ files making it ~300Mb
