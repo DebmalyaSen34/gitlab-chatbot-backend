@@ -117,11 +117,16 @@ class RAGController:
             nodes.append(NodeWithScore(node=node, score=score))
         return nodes
 
-    def _llm_complete(self, prompt: str) -> str:
+    def _llm_complete(self, prompt: str, history: list[dict] | None = None) -> str:
         """Call the LLM directly via the OpenAI-compatible endpoint."""
+        messages = []
+        if history:
+            for msg in history:
+                messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": prompt})
         response = self.llm_client.chat.completions.create(
             model=self.llm_model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
         )
         return response.choices[0].message.content
 
@@ -134,7 +139,7 @@ class RAGController:
         sorted_nodes = sorted(nodes, key=lambda n: n.score or 0, reverse=True)
         return sorted_nodes[:top_n]
 
-    def query(self, query_str: str, query_embedding: list[float] = None) -> dict:
+    def query(self, query_str: str, query_embedding: list[float] = None, history: list[dict] | None = None) -> dict:
         """Full RAG pipeline: embed → search → select top → generate."""
         start_time = time.time()
 
@@ -197,7 +202,7 @@ class RAGController:
         )
 
         t0 = time.time()
-        response = self._llm_complete(prompt)
+        response = self._llm_complete(prompt, history=history)
         generation_time = time.time() - t0
         total_latency = time.time() - start_time
 

@@ -77,8 +77,14 @@ cache: SemanticCache | None = None
 
 
 # ── Models ──
+class HistoryMessage(BaseModel):
+    role: str
+    content: str
+
+
 class ChatRequest(BaseModel):
     query: str
+    history: list[HistoryMessage] = []
 
 
 class SourceChunk(BaseModel):
@@ -166,7 +172,8 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
             )
 
         # 3. RAG retrieval & generation
-        result = rag.query(query, query_embedding=query_embedding)
+        history_dicts = [{"role": m.role, "content": m.content} for m in req.history]
+        result = rag.query(query, query_embedding=query_embedding, history=history_dicts)
         response_text = result["response"]
         response_id = str(int(time.time() * 1000))
 
