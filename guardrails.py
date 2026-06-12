@@ -47,7 +47,6 @@ GITLAB_TOPIC_KEYWORDS = [
     "training", "mentor", "coach", "growth",
 ]
 
-# Shared OpenAI client — created once, reused across all calls
 _llm_client: OpenAI | None = None
 
 
@@ -73,20 +72,19 @@ def is_prompt_injection(query: str) -> bool:
 
 
 def is_on_topic(query: str) -> bool:
-    """Always return True — topic filtering is handled by vector search similarity threshold."""
+    """Topic filtering is handled by vector search similarity threshold."""
     return True
 
 
 def verify_response_grounded(
-    response_text: str, context_chunks: list, api_key: str
-) -> bool:
+    response_text: str, context_chunks: list) -> bool:
     """Check if the response is grounded in the provided context chunks."""
     if not context_chunks:
         return True
 
     try:
         client = _get_llm_client()
-        llm_model = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
+        llm_model = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo") #NOTE: Any other model can also be used
         context_str = "\n---\n".join(
             [c.get_content() if hasattr(c, "get_content") else str(c) for c in context_chunks]
         )

@@ -1,11 +1,3 @@
-"""
-GitLab Handbook Ingestion Pipeline
-
-Reads markdown files from a local clone of the GitLab handbook repository
-(or fetches via the GitLab API as fallback), generates embeddings using
-fastembed (via vecs), and stores them in Supabase with pgvector.
-"""
-
 import os
 import re
 import sys
@@ -20,7 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-# GitLab handbook repo details
+# GitLab handbook details
 GITLAB_REPO_API = "https://gitlab.com/api/v4/projects/gitlab-com%2Fcontent-sites%2Fhandbook/repository"
 HANDBOOK_DIRS = [
     "content/handbook/about",
@@ -64,7 +56,6 @@ HANDBOOK_DIRS = [
 
 
 def map_path_to_url(path: str) -> str:
-    """Convert a file path to the corresponding handbook.gitlab.com URL."""
     clean_path = path.replace("content/", "")
     clean_path = re.sub(r"(?:_)?index\.md$", "", clean_path)
     clean_path = re.sub(r"\.md$", "", clean_path)
@@ -73,7 +64,6 @@ def map_path_to_url(path: str) -> str:
 
 
 def clean_markdown(content: str) -> str:
-    """Strip Hugo frontmatter and clean markdown content."""
     cleaned = re.sub(r"^---[\s\S]*?---", "", content)
     cleaned = re.sub(r"<[^>]+>", "", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
@@ -81,12 +71,10 @@ def clean_markdown(content: str) -> str:
 
 
 def get_file_hash(text: str) -> str:
-    """Generate SHA256 hash for content deduplication."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def merge_paragraphs(paragraphs: list[str], min_chars: int = 500, max_chars: int = 1500) -> list[str]:
-    """Merge small paragraphs into chunks of min_chars–max_chars."""
     if not paragraphs:
         return []
 
@@ -94,20 +82,17 @@ def merge_paragraphs(paragraphs: list[str], min_chars: int = 500, max_chars: int
     current = ""
 
     for para in paragraphs:
-        # If adding this paragraph exceeds max, finalize current chunk
         if current and len(current) + len(para) + 2 > max_chars:
             if len(current) >= min_chars:
                 chunks.append(current.strip())
                 current = para
             else:
-                # Current is too small to stand alone, keep accumulating
                 current += "\n\n" + para
         else:
             current = current + "\n\n" + para if current else para
 
-    # Don't forget the last chunk
     if current.strip():
-        # If it's too small, merge with the previous chunk instead
+        # Too small? merge with the previous chunk instead
         if len(current) < min_chars and chunks:
             chunks[-1] += "\n\n" + current.strip()
         else:
@@ -119,7 +104,6 @@ def merge_paragraphs(paragraphs: list[str], min_chars: int = 500, max_chars: int
 def fetch_markdown_files_from_repo(
     dirs: list[str], branch: str = "main", token: Optional[str] = None
 ) -> dict[str, str]:
-    """Fetch markdown files from GitLab repo via API. Returns {relative_path: content}."""
     files = {}
     headers = {}
     if token:
@@ -246,7 +230,7 @@ def main():
     print("GitLab Handbook Ingestion Pipeline (vecs)")
     print("=" * 60)
 
-    # Step 1: Fetch files
+    # Fetch files
     if args.use_api:
         print("\n[1/3] Fetching markdown files from GitLab repository (API mode)...")
         files = fetch_markdown_files_from_repo(
@@ -268,7 +252,7 @@ def main():
         print("  No files found. Exiting.")
         sys.exit(0)
 
-    # Step 2: Initialize vecs + embedding model
+    # Initialize vecs + embedding model
     print("\n[2/4] Setting up vecs collection...")
     import vecs
     import numpy as np
@@ -280,7 +264,6 @@ def main():
         dimension=384,
     )
 
-    # Optionally clear existing collection
     if args.clear:
         print("\n  Clearing existing embeddings...")
         vx.delete_collection("handbook_embeddings")
@@ -293,7 +276,7 @@ def main():
     print(f"\n[3/4] Chunking files (min={args.min_chunk}, max={args.max_chunk} chars)...")
     embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
 
-    # Phase 1: Collect all chunks with metadata (no embedding yet)
+    # Collect all chunks and their metadata
     all_chunks = []       # flat list of chunk texts
     chunk_meta = []       # parallel list of (doc_id, metadata)
     stats = {"files": 0, "skipped": 0}
@@ -304,7 +287,6 @@ def main():
             stats["skipped"] += 1
             continue
 
-        # Split into paragraphs, filter out tiny ones, then merge
         paragraphs = [p.strip() for p in clean_text.split("\n\n") if len(p.strip()) > 20]
         chunks = merge_paragraphs(paragraphs, min_chars=args.min_chunk, max_chars=args.max_chunk)
         if not chunks:
@@ -331,7 +313,7 @@ def main():
 
     print(f"  {stats['files']} files → {len(all_chunks)} chunks ({stats['skipped']} files skipped)")
 
-    # Phase 2: Embed in batches with progress
+    # Embed using batches for faster processing
     print(f"\n  Embedding {len(all_chunks)} chunks...")
     EMBED_BATCH = 512
     all_embeddings = []
@@ -350,14 +332,14 @@ def main():
         eta = (len(all_chunks) - done) / rate if rate > 0 else 0
         print(f" {batch_time:.1f}s ({done}/{len(all_chunks)}, ~{eta:.0f}s remaining)")
 
-    # Phase 3: Build records
+    # Make records for upsert (doc_id, embedding, metadata)
     all_records = [
         (doc_id, np.array(emb), meta)
         for (doc_id, meta), emb in zip(chunk_meta, all_embeddings)
     ]
     print(f"  Done. {len(all_records)} records ready.")
 
-    # Step 4: Upsert all records in batches
+    # Upsert all records in batches
     print("\n[4/4] Upserting into Supabase...")
     BATCH_SIZE = 500
     upserted = 0
@@ -386,7 +368,7 @@ def main():
     stats["ingested"] = upserted
     stats["errors"] = errors
 
-    # Create index for fast search (increase timeout for large datasets)
+    # INdexing
     print("\n  Creating vector index...")
     import psycopg2
     idx_conn = psycopg2.connect(args.db_connection)

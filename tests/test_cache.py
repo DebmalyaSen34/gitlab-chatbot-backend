@@ -1,5 +1,3 @@
-"""Tests for the SemanticCache module."""
-
 import os
 import numpy as np
 import pytest

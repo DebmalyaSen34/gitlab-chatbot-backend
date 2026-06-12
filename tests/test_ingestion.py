@@ -1,6 +1,3 @@
-"""Tests for the Ingestion module."""
-
-import pytest
 from unittest.mock import patch, MagicMock
 from ingest import (
     map_path_to_url,

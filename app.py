@@ -4,16 +4,14 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
-
 from cache import SemanticCache
 from guardrails import is_prompt_injection, is_on_topic, verify_response_grounded
 from rag import RAGController
 
 load_dotenv()
 
-st.set_page_config(page_title="GitLab Handbook Chat", page_icon="🦊", layout="wide")
+st.set_page_config(page_title="GitLab Chat", page_icon="🦊", layout="wide")
 
-# Hide sidebar completely
 st.markdown(
     "<style>[data-testid='stSidebar'] { display: none !important; }</style>",
     unsafe_allow_html=True,
@@ -38,7 +36,7 @@ if "supabase_key" not in st.session_state:
 
 
 def init_rag(api_key: str, supabase_url: str, supabase_key: str) -> RAGController | None:
-    """Initialize RAGController with error handling."""
+    """Init RAGController with error handling."""
     try:
         return RAGController(
             api_key=api_key,
@@ -60,12 +58,8 @@ if st.session_state.api_key and st.session_state.supabase_url and st.session_sta
     if rag is None:
         st.error("Failed to initialize RAG controller. Check your `.env` credentials.")
 
-# ── Tabs ──
 tab1, tab2, tab3 = st.tabs(["Chat", "Analytics", "Admin"])
 
-# ──────────────────────────
-# Tab 1: Chat
-# ──────────────────────────
 with tab1:
     if not rag:
         st.markdown(
@@ -83,7 +77,6 @@ with tab1:
             unsafe_allow_html=True,
         )
     else:
-        # Welcome screen when no messages
         if not st.session_state.chat_history:
             st.markdown(
                 """
@@ -100,7 +93,7 @@ with tab1:
                 unsafe_allow_html=True,
             )
 
-            # Suggestion chips
+
             chips = [
                 ("PTO Policy", "What's the time off policy?"),
                 ("Code Reviews", "How should I conduct code reviews?"),
@@ -117,10 +110,8 @@ with tab1:
                             st.session_state.last_click = desc
                         st.markdown('</div>', unsafe_allow_html=True)
 
-        # Chat input
         user_query = st.chat_input("Ask about the GitLab handbook...")
 
-        # Process input
         query_to_process = None
         if user_query:
             query_to_process = user_query
@@ -138,7 +129,7 @@ with tab1:
                     "I'm specialized in the GitLab Handbook. Try asking about GitLab's values, culture, hiring, or product direction."
                 )
             else:
-                # 2. Parallel: embed query + cache lookup
+                # 2. Embed query + cache lookup
                 with st.spinner("Searching..."):
                     try:
                         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -158,7 +149,7 @@ with tab1:
                                 }
                             )
                         else:
-                            # 3. RAG retrieval & generation
+                            # 3. Retrieval & generation
                             result = rag.query(query, query_embedding=query_embedding)
                             response_text = result["response"]
 
@@ -178,15 +169,14 @@ with tab1:
                             # Store in cache
                             cache.store(query, query_embedding, response_text)
 
-                            # Fire guardrail in background thread
+                            # Use guardrail in background thread
                             def _run_guardrail(idx, resp, chunks, api_key):
                                 try:
                                     is_safe = verify_response_grounded(resp, chunks, api_key)
-                                    # Use Streamlit's add_script_run_ctx if available
                                     try:
                                         st.session_state.chat_history[idx]["guardrail_status"] = "safe" if is_safe else "unsafe"
                                     except Exception:
-                                        pass  # Can't update session state from thread
+                                        pass 
                                 except Exception:
                                     try:
                                         st.session_state.chat_history[idx]["guardrail_status"] = "error"
@@ -209,14 +199,14 @@ with tab1:
                         else:
                             st.error(f"Error: {error_str}")
 
-        # Render chat history
+        # Chat history
         for msg in st.session_state.chat_history:
             with st.chat_message("user"):
                 st.markdown(msg["query"])
             with st.chat_message("assistant"):
                 st.markdown(msg["response"])
 
-                # Metadata pills
+                # Metadata
                 cache_class = "cache-hit" if msg.get("cache") == "HIT" else "cache-miss"
                 cache_icon = "●" if msg.get("cache") == "HIT" else "○"
                 guardrail_status = msg.get("guardrail_status", "")
@@ -238,7 +228,7 @@ with tab1:
                     unsafe_allow_html=True,
                 )
 
-                # Cited chunks
+                # Citations
                 if msg.get("chunks"):
                     with st.expander("Sources"):
                         for idx, chunk in enumerate(msg["chunks"]):
@@ -251,9 +241,7 @@ with tab1:
                                 language="markdown",
                             )
 
-# ──────────────────────────
-# Tab 2: Analytics
-# ──────────────────────────
+
 with tab2:
     if st.session_state.chat_history:
         last_msg = st.session_state.chat_history[-1]
@@ -300,9 +288,6 @@ with tab2:
     else:
         st.info("Submit a query in the Chat tab to view analytics.")
 
-# ──────────────────────────
-# Tab 3: Admin
-# ──────────────────────────
 with tab3:
     col1, col2 = st.columns(2)
 

@@ -1,8 +1,4 @@
-"""Shared test fixtures for the GitLab Chatbot test suite."""
-
-import os
 import pytest
-import tempfile
 
 
 @pytest.fixture

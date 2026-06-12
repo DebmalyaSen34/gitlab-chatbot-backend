@@ -1,6 +1,3 @@
-"""Tests for the RAG Controller module."""
-
-import os
 import pytest
 from unittest.mock import patch, MagicMock
 from rag import RAGController

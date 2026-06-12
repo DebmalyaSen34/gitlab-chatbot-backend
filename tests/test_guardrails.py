@@ -1,6 +1,3 @@
-"""Tests for the Guardrails module."""
-
-import pytest
 from unittest.mock import patch, MagicMock
 from guardrails import is_prompt_injection, is_on_topic, verify_response_grounded
 

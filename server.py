@@ -2,12 +2,10 @@ import os
 import time
 import logging
 from contextlib import asynccontextmanager
-
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-
 from cache import SemanticCache
 from guardrails import is_prompt_injection, is_on_topic, verify_response_grounded
 from rag import RAGController
@@ -18,9 +16,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# ── Lifespan: init RAG + cache once ──
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    
     global rag, cache
 
     api_key = os.environ.get("OPENAI_API_KEY", "")
@@ -60,7 +58,7 @@ async def lifespan(app: FastAPI):
     cache = None
 
 
-app = FastAPI(title="GitLab Handbook API", lifespan=lifespan)
+app = FastAPI(title="GitLab Chatbot API", lifespan=lifespan)
 
 _origins_raw = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
 ALLOWED_ORIGINS = ["*"] if _origins_raw.strip() == "*" else [o.strip() for o in _origins_raw.split(",")]
@@ -76,7 +74,7 @@ rag: RAGController | None = None
 cache: SemanticCache | None = None
 
 
-# ── Models ──
+# MOdels
 class HistoryMessage(BaseModel):
     role: str
     content: str
@@ -103,8 +101,6 @@ class ChatResponse(BaseModel):
     sources: list[SourceChunk]
     guardrail_status: str = "pending"
 
-
-# ── Background guardrail ──
 def _run_guardrail_async(response_text: str, chunks: list, api_key: str, response_id: str):
     """Run output guardrail in background. Logs result."""
     try:
@@ -117,7 +113,6 @@ def _run_guardrail_async(response_text: str, chunks: list, api_key: str, respons
         logger.error(f"[Guardrail] Response {response_id}: error — {e}")
 
 
-# ── Endpoints ──
 @app.get("/")
 async def root():
     return {"status": "ok"}
@@ -143,7 +138,6 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
 
     api_key = os.environ.get("OPENAI_API_KEY", "")
 
-    # 1. Input guardrails
     if is_prompt_injection(query):
         raise HTTPException(400, "Unsafe query pattern detected.")
 
@@ -156,7 +150,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
     start = time.time()
 
     try:
-        # 2. Cache lookup (embedding is already generated for cache check)
+        # Cache lookup
         query_embedding = rag.get_query_embedding(query)
         cached_res = cache.lookup(query_embedding)
 
@@ -171,13 +165,13 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
                 guardrail_status="safe",
             )
 
-        # 3. RAG retrieval & generation
+        # Retrieval and generation
         history_dicts = [{"role": m.role, "content": m.content} for m in req.history]
         result = rag.query(query, query_embedding=query_embedding, history=history_dicts)
         response_text = result["response"]
         response_id = str(int(time.time() * 1000))
 
-        # 4. Format sources
+        # Format sources
         sources = []
         for chunk in result.get("retrieved_chunks", []):
             meta = chunk.metadata if hasattr(chunk, "metadata") else {}
@@ -189,10 +183,10 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
                 )
             )
 
-        # 5. Cache store
+        # Cache store
         cache.store(query, query_embedding, response_text)
 
-        # 6. Fire output guardrail in background — don't block response
+        # Use output guardrail in background
         background_tasks.add_task(
             _run_guardrail_async,
             response_text,

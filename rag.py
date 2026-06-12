@@ -5,14 +5,11 @@ from openai import OpenAI as OpenAIClient
 from supabase import create_client, Client
 from llama_index.core.schema import NodeWithScore, TextNode
 
-
-# Shared vecs resources — lazy-initialized
 _vecs_collection = None
 _embed_model = None
 
 
 def _get_embed_model():
-    """Get or create a shared fastembed model."""
     global _embed_model
     if _embed_model is None:
         from fastembed import TextEmbedding
@@ -21,7 +18,6 @@ def _get_embed_model():
 
 
 def get_vecs_collection():
-    """Get or create a shared vecs collection."""
     global _vecs_collection
     if _vecs_collection is None:
         import vecs
@@ -40,12 +36,11 @@ def get_vecs_collection():
 
 
 class RAGController:
-    """Retrieval-Augmented Generation controller using vecs + OpenAI-compatible LLM."""
 
     def __init__(self, api_key: str, postgres_connection_string: str = "", supabase_url: str = "", supabase_key: str = "", **kwargs):
         self.api_key = api_key
 
-        # Configure OpenAI-compatible client
+        # configurations
         self.llm_model = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
         client_kwargs = {"api_key": api_key}
         llm_base_url = os.environ.get("OPENAI_API_BASE")
@@ -53,7 +48,6 @@ class RAGController:
             client_kwargs["base_url"] = llm_base_url
         self.llm_client = OpenAIClient(**client_kwargs)
 
-        # Keep Supabase client for any non-vector operations
         if supabase_url and supabase_key:
             self.supabase: Client = create_client(
                 supabase_url=supabase_url, supabase_key=supabase_key
@@ -62,13 +56,13 @@ class RAGController:
             raise ValueError("supabase_url and supabase_key required")
 
     def get_query_embedding(self, query: str) -> list[float]:
-        """Generate embedding for the query using fastembed (local model)."""
+
         model = _get_embed_model()
         embeddings = list(model.embed([query]))
         return embeddings[0].tolist()
 
     def vector_search(self, query_embedding: list[float], top_k: int = 15) -> list[dict]:
-        """Search vecs collection for similar embeddings."""
+
         collection = get_vecs_collection()
         results = collection.query(
             data=query_embedding,
@@ -76,7 +70,6 @@ class RAGController:
             include_value=True,
             include_metadata=True,
         )
-        # vecs returns: (id, distance, metadata) when include_value=True, include_metadata=True
         search_results = []
         for result in results:
             if len(result) == 3:
@@ -118,7 +111,6 @@ class RAGController:
         return nodes
 
     def _llm_complete(self, prompt: str, history: list[dict] | None = None) -> str:
-        """Call the LLM directly via the OpenAI-compatible endpoint."""
         messages = []
         if history:
             for msg in history:
@@ -133,14 +125,13 @@ class RAGController:
     def select_top_nodes(
         self, nodes: list[NodeWithScore], top_n: int = 5
     ) -> list[NodeWithScore]:
-        """Select top-N nodes by vector similarity score."""
         if not nodes:
             return []
         sorted_nodes = sorted(nodes, key=lambda n: n.score or 0, reverse=True)
         return sorted_nodes[:top_n]
 
     def query(self, query_str: str, query_embedding: list[float] = None, history: list[dict] | None = None) -> dict:
-        """Full RAG pipeline: embed → search → select top → generate."""
+        """Full pipeline"""
         start_time = time.time()
 
         # 1. Generate query embedding
